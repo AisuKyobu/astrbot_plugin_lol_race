@@ -554,3 +554,122 @@ class LolRacePlugin(Star):
             yield event.plain_result(f"✅ 已{result['message']}{label}")
         else:
             yield event.plain_result(self._api_err())
+
+    # ================= 比赛侧 =================
+
+    @filter.command("比赛报名", priority=10)
+    async def tournament_signup(self, event: AstrMessageEvent):
+        """报名参加比赛"""
+        self._record_origin(event)
+        qq = event.get_sender_id()
+        text = event.get_message_str().strip()
+        name = text.replace("比赛报名", "", 1).strip() or None
+        tournaments = await self._api("GET", "/tournaments/")
+        if tournaments is None:
+            yield event.plain_result(self._api_err())
+            return
+        if not isinstance(tournaments, list) or not tournaments:
+            yield event.plain_result("❌ 当前没有赛事")
+            return
+        target = None
+        if name:
+            target = next((t for t in tournaments if t.get("name") == name), None)
+            if not target:
+                yield event.plain_result(f"❌ 未找到赛事「{name}」")
+                return
+        else:
+            open_ones = [t for t in tournaments if t.get("signup_open")]
+            if not open_ones:
+                yield event.plain_result("❌ 当前没有开放报名的赛事")
+                return
+            if len(open_ones) > 1:
+                lines = [f"「比赛报名 {t['name']}」" for t in open_ones]
+                yield event.plain_result("❌ 有多个赛事开放报名，请指定：\n" + "\n".join(lines))
+                return
+            target = open_ones[0]
+        result = await self._api(
+            "POST", f"/tournaments/{target['id']}/signup", json={"qq": qq}
+        )
+        if result is None:
+            yield event.plain_result(self._api_err())
+        elif "detail" in result:
+            yield event.plain_result(f"❌ {result['detail']}")
+        else:
+            yield event.plain_result(
+                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n🌐 详情：{self.frontend_url}/#/tournament/{target['id']}"
+            )
+
+    @filter.command("取消报名", priority=10)
+    async def tournament_cancel_signup(self, event: AstrMessageEvent):
+        """取消比赛报名"""
+        self._record_origin(event)
+        qq = event.get_sender_id()
+        text = event.get_message_str().strip()
+        name = text.replace("取消报名", "", 1).strip() or None
+        tournaments = await self._api("GET", "/tournaments/")
+        if tournaments is None:
+            yield event.plain_result(self._api_err())
+            return
+        target = None
+        if name:
+            target = next((t for t in tournaments if t.get("name") == name), None)
+        elif isinstance(tournaments, list) and tournaments:
+            target = tournaments[0]
+        if not target:
+            yield event.plain_result("❌ 未找到赛事")
+            return
+        result = await self._api(
+            "POST", f"/tournaments/{target['id']}/signup/cancel", json={"qq": qq}
+        )
+        if result is None:
+            yield event.plain_result(self._api_err())
+        elif "detail" in result:
+            yield event.plain_result(f"❌ {result['detail']}")
+        else:
+            yield event.plain_result(f"✅ 已取消「{target['name']}」的报名")
+
+    @filter.command("赛程", priority=10)
+    async def tournament_schedule(self, event: AstrMessageEvent):
+        """查询赛事对阵与赛程"""
+        tournaments = await self._api("GET", "/tournaments/")
+        if tournaments is None:
+            yield event.plain_result(self._api_err())
+            return
+        if not isinstance(tournaments, list) or not tournaments:
+            yield event.plain_result("❌ 当前没有赛事")
+            return
+        active = [
+            t for t in tournaments
+            if t.get("status") in ("ongoing", "signup", "team_building")
+        ]
+        if not active:
+            finished = [t for t in tournaments if t.get("status") == "finished"]
+            if finished:
+                yield event.plain_result(
+                    "🏁 赛事已全部结束\n"
+                    + "\n".join(f"🏆 {t['name']}" for t in finished[:3])
+                    + f"\n🌐 {self.frontend_url}/#/tournament"
+                )
+            else:
+                yield event.plain_result("❌ 当前没有进行中的赛事")
+            return
+        lines = []
+        for t in active[:2]:
+            lines.append(f"【{t['name']}】")
+            detail = await self._api("GET", f"/tournaments/{t['id']}")
+            if not detail:
+                continue
+            bracket = detail.get("bracket", [])
+            upcoming = []
+            for rd in bracket:
+                for m in rd.get("matches", []):
+                    if m.get("status") == "finished":
+                        continue
+                    t1 = (m.get("team1") or {}).get("name", "待定")
+                    t2 = (m.get("team2") or {}).get("name", "待定")
+                    upcoming.append(
+                        f"  {rd['title']}：{t1} {m.get('score1', 0)}:{m.get('score2', 0)} {t2}（BO{m.get('bo', 3)}）"
+                    )
+            lines.extend(upcoming[:6] or ["  暂无待赛对阵"])
+        lines.append(f"🌐 完整对阵图：{self.frontend_url}/#/tournament")
+        yield event.plain_result("\n".join(lines))

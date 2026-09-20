@@ -1,6 +1,6 @@
 name: lolrace
 display_name: LOL内战系统
 desc: 为LOL内战提供报名、查询战绩、分队查看等功能的QQ机器人插件
-version: v1.0.0
+version: v1.1.0
 author: 一只冰块
 repo: "https://github.com/AisuKyobu/astrbot_plugin_lol_race"
