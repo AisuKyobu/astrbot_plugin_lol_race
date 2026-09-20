@@ -1,0 +1,16 @@
+{
+  "api_base": {
+    "description": "后端 API 地址",
+    "type": "string",
+    "hint": "如 http://服务器IP:8000/api/v1；若 AstrBot 与后端在同一个 docker compose 网络内，可填 http://backend:8000/api/v1",
+    "obvious_hint": true,
+    "default": "http://127.0.0.1:8000/api/v1"
+  },
+  "frontend_url": {
+    "description": "网页端地址（注册/认证链接会发给用户）",
+    "type": "string",
+    "hint": "如 http://服务器IP:5173",
+    "obvious_hint": true,
+    "default": "http://127.0.0.1:5173"
+  }
+}
