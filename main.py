@@ -101,6 +101,8 @@ class LolRacePlugin(Star):
                                 f"[lolrace] ws got bulletin, payload keys={list(data.get('payload', {}).keys())}"
                             )
                             await self._send_bulletin(data["payload"])
+                        elif data.get("channel") == "auction_bot":
+                            await self._send_auction_notify(data.get("payload") or {})
             except Exception as e:
                 logger.warning(f"[lolrace] ws disconnected: {e}, retry in 5s")
                 await asyncio.sleep(5)
@@ -149,6 +151,30 @@ class LolRacePlugin(Star):
         if len(parts) == 2:
             return f"{parts[0]}:GroupMessage:{group_id}"
         return self._group_origin
+
+    async def _send_auction_notify(self, payload: dict):
+        """接收后端 auction_bot 频道的播报（action=notify），转发到指定群。"""
+        if payload.get("action") != "notify":
+            return
+        group_id = str(payload.get("group_id") or "").strip()
+        text = payload.get("text") or ""
+        if not group_id or not text:
+            return
+        origin = self._origin_for_group(group_id)
+        if not origin and self._group_origin:
+            parts = self._group_origin.split(":")
+            if len(parts) >= 3:
+                origin = f"{parts[0]}:GroupMessage:{group_id}"
+        if not origin:
+            logger.warning(f"[lolrace] auction notify: no origin for group {group_id}")
+            return
+        try:
+            from astrbot.api.event import MessageChain
+            from astrbot.api.message_components import Plain
+
+            await self.context.send_message(origin, MessageChain([Plain(text)]))
+        except Exception as e:
+            logger.warning(f"[lolrace] auction notify send failed: {e}")
 
     async def _send_bulletin(self, payload: dict):
         group_id = str(payload.get("group_id") or "").strip()
@@ -595,17 +621,44 @@ class LolRacePlugin(Star):
         elif "detail" in result:
             yield event.plain_result(f"❌ {result['detail']}")
         else:
-            # 附带 5 分钟网页登录令牌：点开详情即自动登录（7 天会话）
+            # 登录令牌链接走私聊（群内可见会被人盗用会话），群消息只发普通链接
             link = f"{self.frontend_url}/#/tournament/{target['id']}"
             auth = await self._api(
                 "POST", "/auth/token",
                 json={"qq": qq, "nick": event.get_sender_name()},
             )
-            if auth and "token" in auth:
-                link = f"{link}?auth={quote(str(auth['token']))}"
-            yield event.plain_result(
-                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n🌐 详情：{link}"
+            auth_link = (
+                f"{link}?auth={quote(str(auth['token']))}"
+                if auth and "token" in auth
+                else None
             )
+            dm_ok = await self._try_dm(
+                event, qq,
+                f"🔗 你的报名详情（含网页登录，5分钟内点击有效）：\n{auth_link}",
+            ) if auth_link else False
+            group_text = (
+                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n"
+                + ("🔗 详情链接已私聊发送（点开即自动登录）" if dm_ok
+                   else f"🌐 详情：{link}\n💡 群内发送「/登录」可认证网页身份")
+            )
+            yield event.plain_result(group_text)
+
+    async def _try_dm(self, event: AstrMessageEvent, qq: str, text: str) -> bool:
+        """尝试私聊发送；失败（非好友/平台限制）返回 False。"""
+        try:
+            get_platform = getattr(event, "get_platform_name", None)
+            platform = get_platform() if callable(get_platform) else ""
+            if not platform:
+                return False
+            from astrbot.api.event import MessageChain
+            from astrbot.api.message_components import Plain
+
+            origin = f"{platform}:FriendMessage:{qq}"
+            await self.context.send_message(origin, MessageChain([Plain(text)]))
+            return True
+        except Exception as e:
+            logger.warning(f"[lolrace] 私聊发送失败: {e}")
+            return False
 
     @filter.command("取消报名", priority=10)
     async def tournament_cancel_signup(self, event: AstrMessageEvent):
