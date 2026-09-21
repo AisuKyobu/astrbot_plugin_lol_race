@@ -595,8 +595,16 @@ class LolRacePlugin(Star):
         elif "detail" in result:
             yield event.plain_result(f"❌ {result['detail']}")
         else:
+            # 附带 5 分钟网页登录令牌：点开详情即自动登录（7 天会话）
+            link = f"{self.frontend_url}/#/tournament/{target['id']}"
+            auth = await self._api(
+                "POST", "/auth/token",
+                json={"qq": qq, "nick": event.get_sender_name()},
+            )
+            if auth and "token" in auth:
+                link = f"{link}?auth={quote(str(auth['token']))}"
             yield event.plain_result(
-                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n🌐 详情：{self.frontend_url}/#/tournament/{target['id']}"
+                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n🌐 详情：{link}"
             )
 
     @filter.command("取消报名", priority=10)
