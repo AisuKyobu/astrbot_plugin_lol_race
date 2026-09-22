@@ -310,15 +310,13 @@ class LolRacePlugin(Star):
             return
         if "detail" in existing:
             yield event.plain_result("❌ 你还没有注册，请先发送：/注册")
-            return
-        result = await self._api("POST", "/auth/token", json={"qq": qq, "nick": nick})
-        if result and "token" in result:
-            url = f"{self.frontend_url}/#/show?auth={quote(str(result['token']))}"
-            yield event.plain_result(
-                f"🔐 请点击下方链接完成认证（24小时内有效）：\n{url}\n此链接仅限 {nick} (QQ: {qq}) 使用"
-            )
-        else:
-            yield event.plain_result(self._api_err())
+        yield event.plain_result(
+            f"🔐 网页登录方式（30天免登录）：\n"
+            f"1️⃣ 打开 {self.frontend_url}/#/show\n"
+            f"2️⃣ 点击右上角「网页登录」，输入 QQ: {qq} 获取口令\n"
+            f"3️⃣ 在本群发送「网页登录 口令」即可完成\n"
+            f"此方式仅限 {nick} 本人使用，无需私聊"
+        )
 
     @filter.command("签到", priority=10)
     async def checkin(self, event: AstrMessageEvent):
@@ -621,44 +619,13 @@ class LolRacePlugin(Star):
         elif "detail" in result:
             yield event.plain_result(f"❌ {result['detail']}")
         else:
-            # 登录令牌链接走私聊（群内可见会被人盗用会话），群消息只发普通链接
+            # 群里只发普通链接；网页登录走群口令（token 不出现在群里，也避免私聊触发风控）
             link = f"{self.frontend_url}/#/tournament/{target['id']}"
-            auth = await self._api(
-                "POST", "/auth/token",
-                json={"qq": qq, "nick": event.get_sender_name()},
-            )
-            auth_link = (
-                f"{link}?auth={quote(str(auth['token']))}"
-                if auth and "token" in auth
-                else None
-            )
-            dm_ok = await self._try_dm(
-                event, qq,
-                f"🔗 你的报名详情（含网页登录，5分钟内点击有效）：\n{auth_link}",
-            ) if auth_link else False
-            group_text = (
+            yield event.plain_result(
                 f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n"
-                + ("🔗 详情链接已私聊发送（点开即自动登录）" if dm_ok
-                   else f"🌐 详情：{link}\n💡 群内发送「/登录」可认证网页身份")
+                f"🌐 详情：{link}\n"
+                f"💡 首次使用：打开链接点击「网页登录」获取口令，在群里发出口令即可（30天免登录）"
             )
-            yield event.plain_result(group_text)
-
-    async def _try_dm(self, event: AstrMessageEvent, qq: str, text: str) -> bool:
-        """尝试私聊发送；失败（非好友/平台限制）返回 False。"""
-        try:
-            get_platform = getattr(event, "get_platform_name", None)
-            platform = get_platform() if callable(get_platform) else ""
-            if not platform:
-                return False
-            from astrbot.api.event import MessageChain
-            from astrbot.api.message_components import Plain
-
-            origin = f"{platform}:FriendMessage:{qq}"
-            await self.context.send_message(origin, MessageChain([Plain(text)]))
-            return True
-        except Exception as e:
-            logger.warning(f"[lolrace] 私聊发送失败: {e}")
-            return False
 
     @filter.command("取消报名", priority=10)
     async def tournament_cancel_signup(self, event: AstrMessageEvent):
