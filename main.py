@@ -273,6 +273,14 @@ class LolRacePlugin(Star):
                 logger.warning(
                     f"[lolrace] bot message ignored by group mismatch, group_id={group_id}, origin={origin}"
                 )
+            elif result and result.get("web_login"):
+                from astrbot.api.event import MessageChain
+                from astrbot.api.message_components import Plain
+
+                await self.context.send_message(
+                    origin,
+                    MessageChain([Plain("✅ 网页登录成功，30 天内免登录")]),
+                )
             elif result and result.get("ok"):
                 logger.debug(f"[lolrace] bot message cached, id={result.get('id')}")
         except Exception as e:
