@@ -207,6 +207,14 @@ class LolRacePlugin(Star):
         except Exception as e:
             logger.warning(f"[lolrace] bulletin send failed: {e}")
 
+    @staticmethod
+    def _sched_line(prefix: str, s: dict) -> str:
+        """场次展示行：标题 + 时间 + 备注。"""
+        line = f"「{prefix} {s.get('title')}」{s.get('start_time') or ''}"
+        if s.get("description"):
+            line += f" ｜ {s['description']}"
+        return line
+
     def _get_args(self, event: AstrMessageEvent) -> list[str]:
         text = self._get_text(event)
         parts = text.split(maxsplit=1)
@@ -334,15 +342,14 @@ class LolRacePlugin(Star):
             sched_map = {
                 s["title"]: s.get("start_time") for s in scheds if s.get("title")
             }
+            remark_map = {
+                s["title"]: s.get("description") for s in scheds if s.get("title")
+            }
 
         if not title:
             if scheds and isinstance(scheds, list):
                 if len(active) > 1:
-                    names = [
-                        f"「签到 {s['title']}」{s.get('start_time', '')}"
-                        for s in active
-                        if s.get("title")
-                    ]
+                    names = [self._sched_line("签到", s) for s in active if s.get("title")]
                     yield event.plain_result("❌ 请指定场次：\n" + "\n".join(names))
                     return
                 elif len(active) == 1:
@@ -397,6 +404,8 @@ class LolRacePlugin(Star):
             yield event.plain_result(f"❌ {msg}")
         else:
             label = f" ({title}){' ' + st if st else ''}" if title else ""
+            if title and remark_map.get(title):
+                label += f" ｜ {remark_map[title]}"
             yield event.plain_result(f"✅ 签到成功{label}！{self._name(player)}")
 
     @filter.command("取消签到", priority=10)
@@ -415,15 +424,14 @@ class LolRacePlugin(Star):
             sched_map = {
                 s["title"]: s.get("start_time") for s in scheds if s.get("title")
             }
+            remark_map = {
+                s["title"]: s.get("description") for s in scheds if s.get("title")
+            }
 
         if not title:
             if scheds and isinstance(scheds, list):
                 if len(active) > 1:
-                    names = [
-                        f"「取消签到 {s['title']}」{s.get('start_time', '')}"
-                        for s in active
-                        if s.get("title")
-                    ]
+                    names = [self._sched_line("取消签到", s) for s in active if s.get("title")]
                     yield event.plain_result("❌ 请指定场次：\n" + "\n".join(names))
                     return
                 elif len(active) == 1:
@@ -452,6 +460,8 @@ class LolRacePlugin(Star):
             yield event.plain_result(f"❌ {result['detail']}")
         else:
             label = f" ({title}){' ' + st if st else ''}" if title else ""
+            if title and remark_map.get(title):
+                label += f" ｜ {remark_map[title]}"
             yield event.plain_result(f"✅ 已取消签到{label}")
 
     @filter.command("我的战绩", priority=10)
@@ -575,6 +585,8 @@ class LolRacePlugin(Star):
             rtitle = result.get("title") or title
             rtime = result.get("start_time", "")
             label = f" ({rtitle}){' ' + rtime if rtime else ''}" if rtitle else ""
+            if result.get("description"):
+                label += f" ｜ {result['description']}"
             yield event.plain_result(f"✅ 已{result['message']}{label}")
         else:
             yield event.plain_result(self._api_err())
