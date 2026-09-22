@@ -327,6 +327,7 @@ class LolRacePlugin(Star):
             return
         if "detail" in existing:
             yield event.plain_result("❌ 你还没有注册，请先发送：/注册")
+            return
         yield event.plain_result(
             f"🔐 网页登录方式（30天免登录）：\n"
             f"1️⃣ 打开 {self.frontend_url}/#/show\n"
