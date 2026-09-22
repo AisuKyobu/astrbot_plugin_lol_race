@@ -277,9 +277,10 @@ class LolRacePlugin(Star):
                 from astrbot.api.event import MessageChain
                 from astrbot.api.message_components import Plain
 
+                nick = (event.get_sender_name() or "").strip()
                 await self.context.send_message(
                     origin,
-                    MessageChain([Plain("✅ 网页登录成功，30 天内免登录")]),
+                    MessageChain([Plain(f"✅ 网页登录成功：{nick}" if nick else "✅ 网页登录成功")]),
                 )
             elif result and result.get("ok"):
                 logger.debug(f"[lolrace] bot message cached, id={result.get('id')}")
