@@ -31,9 +31,15 @@ class LolRacePlugin(Star):
             cfg.get("frontend_url") or DEFAULT_FRONTEND_URL
         ).rstrip("/")
         self._group_origin = None
-        if not getattr(self, "_ws_started", False):
-            self._ws_started = True
-            asyncio.create_task(self._ws_listener())
+        logger.warning(f"[lolrace] plugin loaded, api_base={self.api_base}")
+        self._ws_task = asyncio.create_task(self._ws_listener())
+
+    async def terminate(self):
+        """AstrBot 卸载/重载插件时取消后台任务，避免残留旧监听。"""
+        task = getattr(self, "_ws_task", None)
+        if task:
+            task.cancel()
+            logger.warning("[lolrace] ws listener terminated")
 
     async def _api(self, method: str, path: str, **kwargs) -> dict | list | None:
         try:
@@ -76,13 +82,13 @@ class LolRacePlugin(Star):
                 "[lolrace] websockets not installed, remind listener disabled"
             )
             return
-        ws_url = (
-            self.api_base.replace("https://", "wss://")
-            .replace("http://", "ws://")
-            .rstrip("/")
-            + "/ws"
-        )
         while True:
+            ws_url = (
+                self.api_base.replace("https://", "wss://")
+                .replace("http://", "ws://")
+                .rstrip("/")
+                + "/ws"
+            )
             try:
                 async with websockets.connect(ws_url, ping_interval=None) as ws:
                     logger.warning(f"[lolrace] ws connected: {ws_url}")
@@ -103,6 +109,9 @@ class LolRacePlugin(Star):
                             await self._send_bulletin(data["payload"])
                         elif data.get("channel") == "auction_bot":
                             await self._send_auction_notify(data.get("payload") or {})
+            except asyncio.CancelledError:
+                logger.warning("[lolrace] ws listener cancelled")
+                raise
             except Exception as e:
                 logger.warning(f"[lolrace] ws disconnected: {e}, retry in 5s")
                 await asyncio.sleep(5)
