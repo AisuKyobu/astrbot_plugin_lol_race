@@ -653,10 +653,47 @@ class LolRacePlugin(Star):
             # 群里只发普通链接；网页登录走群口令（token 不出现在群里，也避免私聊触发风控）
             link = f"{self.frontend_url}/#/tournament/{target['id']}"
             yield event.plain_result(
-                f"✅ 报名成功！\n赛事：{target['name']}\n选手：{qq}\n"
-                f"🌐 详情：{link}\n"
-                f"💡 首次使用：打开链接点击「网页登录」获取口令，在群里发出口令即可（30天免登录）"
+                self._tournament_signup_card(target, qq, await self._api("GET", f"/tournaments/{target['id']}"))
+                + f"\n🌐 详情与对阵图：{link}\n"
+                f"💡 首次使用：打开链接点击「网页登录」，在群里发出口令即可（30天免登录）"
             )
+
+    @staticmethod
+    def _tournament_signup_card(target: dict, qq: str, detail: dict | None) -> str:
+        """报名成功回执卡片：赛事关键信息一览。"""
+        status_map = {
+            "signup": "报名中", "team_building": "建队中",
+            "ongoing": "进行中", "finished": "已结束", "cancelled": "已取消",
+        }
+        lines = [f"✅ 报名成功！（选手：{qq}）", "", f"【{target.get('name', '赛事')}】"]
+
+        meta = []
+        status = status_map.get(target.get("status") or (detail or {}).get("status"), "")
+        if status:
+            meta.append(status)
+        if detail and detail.get("bo"):
+            meta.append(f"BO{detail['bo']} 单败淘汰")
+        if target.get("start_date"):
+            meta.append(f"{target['start_date']} 开赛")
+        if meta:
+            lines.append(" · ".join(meta))
+
+        if detail and detail.get("description"):
+            lines.append(f"📝 {str(detail['description'])[:80]}")
+
+        signup_count = (target.get("signup_count") or 0) + 1
+        team_count = len((detail or {}).get("teams") or []) or target.get("team_count") or 0
+        lines.append(f"👥 本次报名后共 {signup_count} 人报名 · {team_count} 支战队")
+
+        bracket = (detail or {}).get("bracket") or []
+        if bracket:
+            total = sum(len(r.get("matches", [])) for r in bracket)
+            finished = sum(
+                1 for r in bracket for m in r.get("matches", []) if m.get("status") == "finished"
+            )
+            if total:
+                lines.append(f"⚔️ 对阵进度：{finished}/{total} 场已打完")
+        return "\n".join(lines)
 
     @filter.command("取消报名", priority=10)
     async def tournament_cancel_signup(self, event: AstrMessageEvent):
