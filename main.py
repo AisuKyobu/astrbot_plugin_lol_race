@@ -671,8 +671,20 @@ class LolRacePlugin(Star):
         target = None
         if name:
             target = next((t for t in tournaments if t.get("name") == name), None)
-        elif isinstance(tournaments, list) and tournaments:
-            target = tournaments[0]
+            if not target:
+                yield event.plain_result(f"❌ 未找到赛事「{name}」")
+                return
+        else:
+            # 与报名指令同款：仅在唯一可报名赛事时省略名称，多赛事要求指定
+            open_ones = [t for t in tournaments if t.get("signup_open")]
+            if len(open_ones) == 1:
+                target = open_ones[0]
+            elif len(open_ones) > 1:
+                lines = [f"「取消报名 {t['name']}」" for t in open_ones]
+                yield event.plain_result("❌ 有多个开放报名的赛事，请指定：\n" + "\n".join(lines))
+                return
+            elif isinstance(tournaments, list) and tournaments:
+                target = tournaments[0]
         if not target:
             yield event.plain_result("❌ 未找到赛事")
             return
