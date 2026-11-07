@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from datetime import timedelta, timezone
 from urllib.parse import quote
 
@@ -19,8 +20,17 @@ DEFAULT_API_BASE = "http://127.0.0.1:8000/api/v1"
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:5173"
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
+# 进程级单例：整个 AstrBot 只允许存在一条 WS 监听。
+# 插件被重载/重复实例化时，旧实例的 _ws_task 不会自动消失，
+# 后端一次 remind 广播会被 N 条连接各收一遍 → bot 在群里连发 N 条一模一样的提醒。
+_WS_TASK: asyncio.Task | None = None
 
-@register("lolrace", "一只冰块", "LOL内战系统", "v1.0.0")
+# 进程级去重：同一次比赛提醒在 20 秒内只处理一次（多连接/重试的兜底）
+_REMIND_SEEN: dict[int, float] = {}
+REMIND_DEDUPE_SECONDS = 20
+
+
+@register("lolrace", "一只冰块", "LOL内战系统", "v1.1.1")
 class LolRacePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -32,14 +42,23 @@ class LolRacePlugin(Star):
         ).rstrip("/")
         self._group_origin = None
         logger.warning(f"[lolrace] plugin loaded, api_base={self.api_base}")
-        self._ws_task = asyncio.create_task(self._ws_listener())
+        global _WS_TASK
+        if _WS_TASK is not None and not _WS_TASK.done():
+            # 旧实例还在监听：先掐掉，保证进程里只有一条连接
+            _WS_TASK.cancel()
+            logger.warning("[lolrace] 检测到已有 ws 监听，已取消旧的，重建一条")
+        _WS_TASK = asyncio.create_task(self._ws_listener())
+        self._ws_task = _WS_TASK
 
     async def terminate(self):
         """AstrBot 卸载/重载插件时取消后台任务，避免残留旧监听。"""
+        global _WS_TASK
         task = getattr(self, "_ws_task", None)
         if task:
             task.cancel()
             logger.warning("[lolrace] ws listener terminated")
+        if _WS_TASK is task:
+            _WS_TASK = None
 
     async def _api(self, method: str, path: str, **kwargs) -> dict | list | None:
         try:
@@ -117,6 +136,20 @@ class LolRacePlugin(Star):
                 await asyncio.sleep(5)
 
     async def _send_remind(self, payload: dict):
+        # 同一次提醒 20 秒内只发一遍：即使进程里还有残留连接、或后端重复投递，
+        # 群里也不会出现第二条一模一样的提醒
+        sid = payload.get("session_id")
+        now = time.time()
+        if sid is not None:
+            last = _REMIND_SEEN.get(sid)
+            if last and now - last < REMIND_DEDUPE_SECONDS:
+                logger.warning(
+                    f"[lolrace] remind 去重: session={sid} 距上次 {now - last:.1f}s，跳过"
+                )
+                return
+            _REMIND_SEEN[sid] = now
+            for k in [k for k, v in _REMIND_SEEN.items() if now - v > 600]:
+                _REMIND_SEEN.pop(k, None)
         group_id = str(payload.get("group_id") or "").strip()
         target_origin = self._origin_for_group(group_id) or self._group_origin
         if not target_origin:
