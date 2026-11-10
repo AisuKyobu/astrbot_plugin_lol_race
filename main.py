@@ -30,7 +30,7 @@ _REMIND_SEEN: dict[int, float] = {}
 REMIND_DEDUPE_SECONDS = 20
 
 
-@register("lolrace", "一只冰块", "LOL内战系统", "v1.2.0")
+@register("lolrace", "一只冰块", "LOL内战系统", "v1.2.1")
 class LolRacePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -41,6 +41,7 @@ class LolRacePlugin(Star):
             cfg.get("frontend_url") or DEFAULT_FRONTEND_URL
         ).rstrip("/")
         self._group_origin = None
+        self._bg_tasks: set = set()
         logger.warning(f"[lolrace] plugin loaded, api_base={self.api_base}")
         global _WS_TASK
         if _WS_TASK is not None and not _WS_TASK.done():
@@ -300,18 +301,30 @@ class LolRacePlugin(Star):
             self._record_origin(event)
             group_id = self._get_group_id(event)
             origin = str(getattr(event, "unified_msg_origin", "") or "")
+            payload = {
+                "group_id": group_id,
+                "group_origin": origin,
+                "user_id": sender_id,
+                "nickname": event.get_sender_name(),
+                "content": text,
+                "at_bot": at_bot,
+            }
+
+            # 指令消息：交给 AstrBot 的指令处理器，小战不接话，也不阻塞指令回复
+            if self._is_command_event(event, text):
+                payload["is_command"] = True
+                suppress = getattr(event, "should_call_llm", None)
+                if callable(suppress):
+                    suppress(False)
+                self._spawn_cache(payload)
+                return
+
+            payload["is_command"] = False
             result = await self._api(
                 "POST",
                 "/bot/messages",
                 timeout=15,
-                json={
-                    "group_id": group_id,
-                    "group_origin": origin,
-                    "user_id": sender_id,
-                    "nickname": event.get_sender_name(),
-                    "content": text,
-                    "at_bot": at_bot,
-                },
+                json=payload,
             )
             if not isinstance(result, dict):
                 return
@@ -345,6 +358,41 @@ class LolRacePlugin(Star):
                 logger.debug(f"[lolrace] bot message cached, id={result.get('id')}")
         except Exception as e:
             logger.warning(f"[lolrace] cache_group_message error: {e}")
+
+    def _is_command_event(self, event: AstrMessageEvent, text: str) -> bool:
+        """这条消息是否已被 AstrBot 识别为指令。
+
+        WakingCheck 会把命中的 handler 放进 activated_handlers；只要其中有
+        CommandFilter / CommandGroupFilter，就说明是 /help、/签到 这类指令，
+        小战不应再接话，否则会和指令处理器各回一条。
+        """
+        try:
+            handlers = event.get_extra("activated_handlers") or []
+        except Exception:
+            handlers = []
+        for handler in handlers:
+            for f in getattr(handler, "event_filters", []) or []:
+                if type(f).__name__ in ("CommandFilter", "CommandGroupFilter"):
+                    return True
+        # 老版本取不到 activated_handlers 时，按常见指令前缀兜底
+        head = (text or "").strip()[:1]
+        return bool(head) and head in "/／!！#＃"
+
+    def _spawn_cache(self, payload: dict) -> None:
+        """指令消息只入缓存、不等回复，避免后端慢时拖住指令。"""
+        try:
+            task = asyncio.create_task(self._cache_message_bg(payload))
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+        except Exception as e:
+            logger.warning(f"[lolrace] schedule cache failed: {e}")
+
+    async def _cache_message_bg(self, payload: dict) -> None:
+        result = await self._api("POST", "/bot/messages", timeout=8, json=payload)
+        if isinstance(result, dict) and result.get("reason") == "group_mismatch":
+            logger.warning(
+                f"[lolrace] command message ignored by group mismatch, group_id={payload.get('group_id')}"
+            )
 
     async def _send_persona_reply(self, origin: str, reply: str):
         """小战在群里的回复：走主动消息通道，和现有提醒/播报一致。"""
