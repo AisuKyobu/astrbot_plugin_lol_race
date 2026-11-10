@@ -30,7 +30,7 @@ _REMIND_SEEN: dict[int, float] = {}
 REMIND_DEDUPE_SECONDS = 20
 
 
-@register("lolrace", "一只冰块", "LOL内战系统", "v1.1.1")
+@register("lolrace", "一只冰块", "LOL内战系统", "v1.2.0")
 class LolRacePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -60,9 +60,9 @@ class LolRacePlugin(Star):
         if _WS_TASK is task:
             _WS_TASK = None
 
-    async def _api(self, method: str, path: str, **kwargs) -> dict | list | None:
+    async def _api(self, method: str, path: str, timeout: float = 10, **kwargs) -> dict | list | None:
         try:
-            async with httpx.AsyncClient(timeout=10) as c:
+            async with httpx.AsyncClient(timeout=timeout) as c:
                 r = await c.request(method, f"{self.api_base}{path}", **kwargs)
                 if r.status_code >= 500:
                     logger.warning(f"[lolrace] api {method} {path} -> {r.status_code}")
@@ -285,28 +285,42 @@ class LolRacePlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def cache_group_message(self, event: AstrMessageEvent):
         try:
-            text = self._get_text(event)
-            if not text.strip():
+            # 机器人自己发出去的消息不再回传，否则小战会跟自己聊天
+            sender_id = str(event.get_sender_id() or "")
+            self_id = str(getattr(event, "get_self_id", lambda: "")() or "")
+            if sender_id and self_id and sender_id == self_id:
                 return
+
+            text = self._get_text(event)
+            # 只 @ 一下没打字：也要让小战回一句“干嘛”
+            at_bot = bool(getattr(event, "is_at_or_wake_command", False))
+            if not text.strip() and not at_bot:
+                return
+
             self._record_origin(event)
             group_id = self._get_group_id(event)
             origin = str(getattr(event, "unified_msg_origin", "") or "")
             result = await self._api(
                 "POST",
                 "/bot/messages",
+                timeout=15,
                 json={
                     "group_id": group_id,
                     "group_origin": origin,
-                    "user_id": event.get_sender_id(),
+                    "user_id": sender_id,
                     "nickname": event.get_sender_name(),
                     "content": text,
+                    "at_bot": at_bot,
                 },
             )
-            if result and result.get("reason") == "group_mismatch":
+            if not isinstance(result, dict):
+                return
+            if result.get("reason") == "group_mismatch":
                 logger.warning(
                     f"[lolrace] bot message ignored by group mismatch, group_id={group_id}, origin={origin}"
                 )
-            elif result and result.get("web_login"):
+                return
+            if result.get("web_login"):
                 from astrbot.api.event import MessageChain
                 from astrbot.api.message_components import Plain
 
@@ -315,10 +329,35 @@ class LolRacePlugin(Star):
                     origin,
                     MessageChain([Plain(f"✅ 网页登录成功：{nick}" if nick else "✅ 网页登录成功")]),
                 )
-            elif result and result.get("ok"):
+                return
+
+            # 小战人设：后端在响应里带回要发的话；没有就什么都不做
+            persona = result.get("persona") or {}
+            reply = (persona.get("reply") or "").strip() if isinstance(persona, dict) else ""
+            if reply:
+                # 小战已经开口了，别再让 AstrBot 默认 LLM 回一遍
+                suppress = getattr(event, "should_call_llm", None)
+                if callable(suppress):
+                    suppress(False)
+                await self._send_persona_reply(origin, reply)
+                logger.info(f"[lolrace] 小战开口({persona.get('source')}): {reply[:60]}")
+            elif result.get("ok"):
                 logger.debug(f"[lolrace] bot message cached, id={result.get('id')}")
         except Exception as e:
             logger.warning(f"[lolrace] cache_group_message error: {e}")
+
+    async def _send_persona_reply(self, origin: str, reply: str):
+        """小战在群里的回复：走主动消息通道，和现有提醒/播报一致。"""
+        from astrbot.api.event import MessageChain
+        from astrbot.api.message_components import Plain
+
+        if not origin:
+            logger.warning("[lolrace] persona reply: no origin")
+            return
+        try:
+            await self.context.send_message(origin, MessageChain([Plain(reply)]))
+        except Exception as e:
+            logger.warning(f"[lolrace] persona reply send failed: {e}")
 
     @filter.command("帮助", priority=10)
     async def help_cmd(self, event: AstrMessageEvent):
